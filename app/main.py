@@ -1,10 +1,12 @@
 """LINE webhook server. Run with: uvicorn app.main:create_app --factory --reload"""
 
+import hmac
 import json
 import logging
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 
 from app.bot import HINT, Bot
 from app.config import Settings, get_settings
@@ -70,13 +72,29 @@ def create_app(
         return {"status": "ok"}
 
     @app.post("/callback")
-    async def callback(request: Request, background: BackgroundTasks) -> str:
+    async def callback(request: Request) -> str:
         body = await request.body()
         if not verify_signature(settings.line_channel_secret, body, request.headers.get("X-Line-Signature", "")):
             raise HTTPException(status_code=400, detail="Invalid signature")
-        # Answer LINE right away; fetching prices happens after the response is sent
+        # Reply before answering LINE: Cloud Run only gives the app CPU while a request is open
         for event in json.loads(body).get("events", []):
-            background.add_task(handle_event, bot, line, event)
+            await run_in_threadpool(handle_event, bot, line, event)
         return "OK"
+
+    @app.post("/jobs/daily-summary")
+    def daily_summary(x_job_secret: str = Header(default="")) -> dict:
+        """Called by Cloud Scheduler on weekdays after the Thai market closes."""
+        if not settings.job_secret or not hmac.compare_digest(x_job_secret, settings.job_secret):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        sent = failed = 0
+        for user_id, messages in bot.daily_summaries():
+            try:
+                line.push(user_id, messages)
+                sent += 1
+            except Exception:
+                log.exception("Daily summary push failed")
+                failed += 1
+        log.info("Daily summary: %d sent, %d failed", sent, failed)
+        return {"sent": sent, "failed": failed}
 
     return app

@@ -1,6 +1,7 @@
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from typing import Protocol
 
 import yfinance as yf
@@ -11,6 +12,10 @@ log = logging.getLogger(__name__)
 class PriceProvider(Protocol):
     def history(self, yf_symbols: list[str]) -> dict[str, list[float]]:
         """Daily closes (oldest first) for each symbol that has data. Unknown symbols are left out."""
+        ...
+
+    def last_trading_day(self, yf_symbol: str) -> date | None:
+        """Date of the symbol's latest daily bar, in the exchange's own time zone."""
         ...
 
 
@@ -44,6 +49,16 @@ class YFinanceProvider:
                         self._cache[symbol] = (now, closes)
                         result[symbol] = closes
         return result
+
+    def last_trading_day(self, yf_symbol: str) -> date | None:
+        try:
+            df = yf.Ticker(yf_symbol).history(period="5d")
+        except Exception:
+            log.warning("Trading day lookup failed for %s", yf_symbol, exc_info=True)
+            return None
+        if df is None or df.empty:
+            return None
+        return df.index[-1].date()
 
     @staticmethod
     def _fetch(yf_symbol: str) -> list[float]:

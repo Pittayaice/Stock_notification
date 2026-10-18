@@ -12,6 +12,7 @@ from app.line_api import LineClient, text_message, verify_signature
 from app.main import create_app
 
 SECRET = "test-secret"
+JOB_SECRET = "job-secret"
 
 
 def sign(body: bytes, secret: str = SECRET) -> str:
@@ -21,9 +22,13 @@ def sign(body: bytes, secret: str = SECRET) -> str:
 class FakeLine:
     def __init__(self):
         self.replies: list[tuple[str, list[dict]]] = []
+        self.pushes: list[tuple[str, list[dict]]] = []
 
     def reply(self, reply_token: str, messages: list[dict]) -> None:
         self.replies.append((reply_token, messages))
+
+    def push(self, to: str, messages: list[dict]) -> None:
+        self.pushes.append((to, messages))
 
     def show_loading(self, user_id: str, seconds: int = 10) -> None:
         pass
@@ -36,7 +41,7 @@ def line() -> FakeLine:
 
 @pytest.fixture
 def client(prices, line) -> TestClient:
-    return TestClient(create_app(Settings(SECRET, "token", "sqlite://"), prices=prices, line=line))
+    return TestClient(create_app(Settings(SECRET, "token", "sqlite://", job_secret=JOB_SECRET), prices=prices, line=line))
 
 
 def post(client: TestClient, payload: dict, signature: str | None = None):
@@ -104,3 +109,22 @@ def test_line_client_sends_reply():
             "quickReply": {"items": [{"type": "action", "action": {"type": "message", "label": "Yes", "text": "yes"}}]},
         }],
     }
+
+
+def test_daily_summary_job_needs_the_secret(client, line):
+    assert client.post("/jobs/daily-summary").status_code == 403
+    assert client.post("/jobs/daily-summary", headers={"X-Job-Secret": "wrong"}).status_code == 403
+    assert line.pushes == []
+
+
+def test_daily_summary_job_pushes_cards(client, line):
+    post(client, {"events": [text_event("add PTT 100 33.90"), text_event("daily on")]})
+    response = client.post("/jobs/daily-summary", headers={"X-Job-Secret": JOB_SECRET})
+    assert response.json() == {"sent": 1, "failed": 0}
+    [(to, [message])] = line.pushes
+    assert to == "U1" and message["type"] == "flex"
+
+
+def test_daily_summary_job_disabled_without_secret(prices, line):
+    client = TestClient(create_app(Settings(SECRET, "token", "sqlite://"), prices=prices, line=line))
+    assert client.post("/jobs/daily-summary", headers={"X-Job-Secret": ""}).status_code == 403

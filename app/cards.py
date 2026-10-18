@@ -35,6 +35,11 @@ class PortfolioView:
     missing: list[str]  # holdings with no price, e.g. "🇹🇭 XYZ"
     realized: list[tuple[Market, float]]
     updated: datetime
+    daily: bool = False  # the after-close push rather than a reply to `port`
+
+    @property
+    def title(self) -> str:
+        return "📊 สรุปพอร์ตประจำวัน · Daily Summary" if self.daily else "📊 พอร์ตของฉัน · My Portfolio"
 
 
 def tone(amount: float, up: str = UP, down: str = DOWN) -> str:
@@ -124,7 +129,7 @@ def holdings_rows(positions: list[Position], usd_thb: float | None) -> list[dict
 
 
 def summary_header(view: PortfolioView) -> dict:
-    contents = [text("📊 พอร์ตของฉัน · My Portfolio", size="xs", color=HEADER_MUTED)]
+    contents = [text(view.title, size="xs", color=HEADER_MUTED)]
     s = view.summary
     if s:
         contents += [
@@ -193,7 +198,7 @@ def portfolio_card(view: PortfolioView) -> dict:
             body = holdings_rows(page, view.usd_thb) + totals_rows(view)
         else:
             header = vbox(
-                text(f"📊 พอร์ตของฉัน · My Portfolio ({number}/{len(pages)})", size="xs", color=HEADER_MUTED),
+                text(f"{view.title} ({number}/{len(pages)})", size="xs", color=HEADER_MUTED),
                 paddingAll="16px", backgroundColor=HEADER_BG,
             )
             body = holdings_rows(page, view.usd_thb)
@@ -205,10 +210,16 @@ def portfolio_card(view: PortfolioView) -> dict:
             "footer": footer(view.updated),
         })
 
-    if view.summary:
-        s = view.summary
+    # altText is what shows in the chat list and the phone notification
+    s = view.summary
+    if s and view.daily:
+        alt = (
+            f"📊 สรุปพอร์ตวันนี้ {fmt.signed_money(s.day_change, '฿')} ({fmt.signed_pct(s.day_change_pct)})"
+            f" · P/L รวม {fmt.signed_money(s.pnl, '฿')}"
+        )
+    elif s:
         alt = f"📊 พอร์ต {fmt.money(s.value, '฿')} · P/L {fmt.signed_money(s.pnl, '฿')} ({fmt.signed_pct(s.pnl_pct)})"
     else:
-        alt = "📊 พอร์ตของฉัน · My Portfolio"
+        alt = view.title
     contents = bubbles[0] if len(bubbles) == 1 else {"type": "carousel", "contents": bubbles}
     return {"type": "flex", "altText": alt, "contents": contents}

@@ -14,6 +14,7 @@ plus moving averages (MA20/50/200).
 | `del PTT` | Remove a holding |
 | `port` | Portfolio: each stock's P/L, totals in THB, today's change |
 | `PTT` | Price, today's change, MA20/50/200, your P/L on it |
+| `daily on` / `daily off` | Portfolio card pushed every weekday ~17:10 after the Thai market closes |
 | `deleteall` | Delete all of your data (asks to confirm) |
 | `help` | Command list |
 
@@ -51,6 +52,35 @@ cp .env.example .env   # then paste your LINE Channel secret and access token in
 
 The free ngrok address changes every time ngrok restarts, so update the webhook URL when it does.
 
+## Deploy (Google Cloud Run)
+
+The bot runs on Cloud Run in Singapore (`asia-southeast1`), project `stock-notification-511019`,
+with a Neon Postgres database. Secrets live in Google Secret Manager:
+
+| Secret | Env var in the app |
+|---|---|
+| `line-channel-secret` | `LINE_CHANNEL_SECRET` |
+| `line-channel-access-token` | `LINE_CHANNEL_ACCESS_TOKEN` |
+| `database-url` | `DATABASE_URL` |
+| `job-secret` | `JOB_SECRET` (Cloud Scheduler sends it to run the daily job) |
+
+Deploy a new version after changing code:
+
+```bash
+gcloud run deploy stock-bot --source . --region asia-southeast1
+```
+
+Daily summary: Cloud Scheduler job `daily-summary` calls `POST /jobs/daily-summary` at
+17:10 Bangkok time, Monday–Friday. Users with `daily on` get their portfolio card if a market
+they hold stocks in closed a new trading day since the last run (PTT.BK marks SET trading days,
+^GSPC marks US ones), so holidays send nothing. Each card uses one LINE push from the monthly quota.
+
+Logs:
+
+```bash
+gcloud run services logs read stock-bot --region asia-southeast1 --limit 50
+```
+
 ## Tests
 
 ```bash
@@ -83,6 +113,4 @@ tests/           pytest suite (no network needed)
 ## Next
 
 - Rich menu (button panel) for port / add / alerts / help
-- Daily 17:00 summary push (SET close + last night's US close), opt-in per user
 - Alerts: big daily moves, MA crosses, target prices
-- Deploy: Postgres (Supabase) + Google Cloud Run

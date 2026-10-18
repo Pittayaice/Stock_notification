@@ -1,6 +1,7 @@
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, UniqueConstraint, create_engine
+from sqlalchemy import Date, DateTime, Float, ForeignKey, String, UniqueConstraint, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -54,12 +55,26 @@ class Realized(Base):
     sold_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class MarketDay(Base):
+    """Latest trading day per market that a daily summary has already covered."""
+
+    __tablename__ = "market_days"
+
+    market: Mapped[str] = mapped_column(String(8), primary_key=True)
+    last_reported: Mapped[date] = mapped_column(Date)
+
+
 def make_session_factory(database_url: str) -> sessionmaker:
     kwargs: dict = {}
     if database_url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
         if database_url in ("sqlite://", "sqlite:///:memory:"):
             kwargs["poolclass"] = StaticPool  # share one in-memory DB across threads
+    else:
+        # Neon/Supabase hand out postgres:// or postgresql:// URLs; use the psycopg 3 driver
+        database_url = re.sub(r"^postgres(ql)?://", "postgresql+psycopg://", database_url)
+        kwargs["pool_pre_ping"] = True  # serverless Postgres closes idle connections
+        kwargs["connect_args"] = {"prepare_threshold": None}  # also works through connection poolers
     engine = create_engine(database_url, **kwargs)
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)

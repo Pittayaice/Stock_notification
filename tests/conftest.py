@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -25,6 +25,11 @@ class FakePrices:
     def __init__(self, data: dict[str, list[float]]):
         self.data = data
         self.calls: list[list[str]] = []
+        # Latest trading day per calendar symbol (PTT.BK for SET, ^GSPC for US)
+        self.days: dict[str, date] = {"PTT.BK": date(2026, 10, 9), "^GSPC": date(2026, 10, 8)}
+
+    def last_trading_day(self, yf_symbol: str) -> date | None:
+        return self.days.get(yf_symbol)
 
     def history(self, yf_symbols: list[str]) -> dict[str, list[float]]:
         self.calls.append(list(yf_symbols))

@@ -1,0 +1,7 @@
+# Files NOT uploaded to Google Cloud when deploying
+#!include:.gitignore
+.git/
+.gcloudignore
+tests/
+branding/
+README.md

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app import formatting as fmt
 from app.cards import PortfolioView, portfolio_card
 from app.config import TZ
-from app.db import Holding, Realized, User
+from app.db import Holding, MarketDay, Realized, User
 from app.indicators import crossed, sma
 from app.line_api import text_message
 from app.markets import FX_USD_THB, Market
@@ -40,6 +40,9 @@ del PTT
 port
 ดูพอร์ต · Show portfolio
 
+daily on / daily off
+สรุปพอร์ตทุกวันหลังตลาดปิด · Daily summary after market close
+
 PTT
 ดูราคา + เส้นค่าเฉลี่ย MA · Price & moving averages
 
@@ -57,6 +60,14 @@ WELCOME = (
 HINT = "พิมพ์ help เพื่อดูวิธีใช้ · Type help to see commands"
 UNKNOWN = f"🤔 ไม่เข้าใจคำสั่ง · Unknown command\n{HINT}"
 VIEW_PORT = "พิมพ์ port เพื่อดูพอร์ต · Type port to view"
+
+DAILY_ON = (
+    "🔔 สรุปพอร์ตรายวัน: เปิด · Daily summary: ON\n"
+    "ส่งทุกวันทำการ ~17:10 หลังตลาดหุ้นไทยปิด (หุ้นไทยวันนี้ + หุ้นอเมริกาเมื่อคืน)\n"
+    "Weekdays ~17:10 after the Thai market closes (SET today + US last night)\n\n"
+    "ปิด · Turn off: daily off"
+)
+DAILY_OFF = "🔕 สรุปพอร์ตรายวัน: ปิด · Daily summary: OFF\n\nเปิด · Turn on: daily on"
 
 USAGE = {
     "add": ("add SYMBOL QTY PRICE", "add PTT 100 33.90"),
@@ -133,6 +144,8 @@ class Bot:
                 return self._delete(session, user_id, args)
             if cmd in ("port", "portfolio"):
                 return self._portfolio(session, user_id)
+            if cmd == "daily":
+                return self._daily_setting(session, user_id, args)
             if cmd in ("help", "?"):
                 return [text_message(HELP)]
             if cmd == "deleteall":
@@ -141,7 +154,45 @@ class Bot:
                 return self._detail(session, user_id, tokens[0])
         return [text_message(UNKNOWN)]
 
+    def daily_summaries(self) -> list[tuple[str, list[dict]]]:
+        """Portfolio cards to push after market close, as (user_id, messages).
+
+        Only users who turned the summary on and hold stocks in a market that has closed
+        a new trading day since the last run get one, so weekends and holidays send nothing.
+        """
+        with self._sessions() as session:
+            fresh: list[str] = []
+            for market in Market:
+                day = self._prices.last_trading_day(market.calendar_symbol)
+                seen = session.get(MarketDay, market.value)
+                if day is None or (seen and day <= seen.last_reported):
+                    continue
+                fresh.append(market.value)
+                if seen:
+                    seen.last_reported = day
+                else:
+                    session.add(MarketDay(market=market.value, last_reported=day))
+            if not fresh:
+                return []
+
+            user_ids = session.scalars(
+                select(User.line_user_id)
+                .where(User.daily_summary, User.active)
+                .where(User.line_user_id.in_(select(Holding.user_id).where(Holding.market.in_(fresh))))
+            ).all()
+            summaries = [(user_id, self._portfolio(session, user_id, daily=True)) for user_id in user_ids]
+            session.commit()
+        return summaries
+
     # --- commands ---
+
+    def _daily_setting(self, session: Session, user_id: str, args: list[str]) -> list[dict]:
+        user = session.get(User, user_id)
+        choice = args[0].lower() if args else ""
+        if choice in ("on", "off"):
+            user.daily_summary = choice == "on"
+            session.commit()
+        return [text_message(DAILY_ON if user.daily_summary else DAILY_OFF)]
 
     def _trade(self, session: Session, user_id: str, cmd: str, args: list[str]) -> list[dict]:
         if len(args) != 3:
@@ -234,7 +285,7 @@ class Bot:
         session.commit()
         return [text_message("🗑️ ลบข้อมูลทั้งหมดแล้ว · All your data has been deleted")]
 
-    def _portfolio(self, session: Session, user_id: str) -> list[dict]:
+    def _portfolio(self, session: Session, user_id: str, daily: bool = False) -> list[dict]:
         holdings = session.scalars(
             select(Holding).where(Holding.user_id == user_id).order_by(Holding.market, Holding.symbol)
         ).all()
@@ -279,6 +330,7 @@ class Bot:
             missing=missing,
             realized=realized,
             updated=self._now(),
+            daily=daily,
         ))]
 
     def _detail(self, session: Session, user_id: str, raw: str) -> list[dict]:

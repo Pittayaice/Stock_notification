@@ -1,10 +1,11 @@
 import json
+from datetime import date
 
 import pytest
 from sqlalchemy import select
 
 from app.cards import DOWN, UP
-from app.db import Holding, Realized
+from app.db import Holding, Realized, User
 from app.line_api import message_text
 from tests.conftest import closes
 
@@ -224,3 +225,44 @@ def test_help_and_unknown(bot):
     assert "How to use" in say(bot, "help")
     assert "Unknown command" in say(bot, "สวัสดี")
     assert "Unknown command" in say(bot, "what is my port")
+
+
+def test_daily_on_off(bot, sessions):
+    assert "OFF" in say(bot, "daily")
+    assert "ON" in say(bot, "daily on")
+    with sessions() as s:
+        assert s.get(User, "U1").daily_summary
+    assert "OFF" in say(bot, "daily off")
+
+
+def test_daily_summary_goes_to_opted_in_users_with_holdings(bot):
+    say(bot, "add PTT 100 33.90", user="U1")
+    say(bot, "daily on", user="U1")
+    say(bot, "add PTT 100 33.90", user="U2")  # holds stocks but didn't turn it on
+    say(bot, "daily on", user="U3")  # turned it on but holds nothing
+
+    [(user_id, [message])] = bot.daily_summaries()
+    assert user_id == "U1"
+    assert message["type"] == "flex"
+    assert message["altText"] == "📊 สรุปพอร์ตวันนี้ +฿50.00 (+1.46%) · P/L รวม +฿85.00"
+    assert "Daily Summary" in message_text(message)
+
+
+def test_daily_summary_sent_once_per_trading_day(bot, prices):
+    say(bot, "add PTT 100 33.90")
+    say(bot, "daily on")
+    assert len(bot.daily_summaries()) == 1
+    assert bot.daily_summaries() == []  # same trading day again, e.g. a retry
+    prices.days["PTT.BK"] = date(2026, 10, 12)  # next trading day
+    assert len(bot.daily_summaries()) == 1
+
+
+def test_thai_holiday_only_notifies_us_holders(bot, prices):
+    say(bot, "add PTT 100 33.90", user="THAI")
+    say(bot, "daily on", user="THAI")
+    say(bot, "add AAPL 10 205", user="USA")
+    say(bot, "daily on", user="USA")
+    bot.daily_summaries()
+
+    prices.days["^GSPC"] = date(2026, 10, 12)  # US traded, SET closed for a holiday
+    assert [user_id for user_id, _ in bot.daily_summaries()] == ["USA"]
